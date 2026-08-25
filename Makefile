@@ -16,4 +16,4 @@ gold:
 	docker exec -it lakehouse-spark spark-submit --packages org.apache.hadoop:hadoop-aws:3.3.4,com.oracle.database.jdbc:ojdbc8:21.9.0.0 /home/jovyan/work/process_gold.py
 
 query-oracle:
-	echo "SET PAGESIZE 50; SET LINESIZE 200; COLUMN PRODUCT_ID FORMAT A12; COLUMN PRODUCT_TITLE FORMAT A40; SELECT * FROM GOLD_BOOK_REVIEWS; EXIT;" | docker exec -i lakehouse-oracle sqlplus system/oracle@//localhost:1521/XEPDB1
+	printf "SET PAGESIZE 50;\nSET LINESIZE 200;\nCOLUMN PRODUCT_ID FORMAT A12;\nCOLUMN PRODUCT_TITLE FORMAT A40;\nSELECT * FROM GOLD_BOOK_REVIEWS;\nEXIT;\n" | docker exec -i lakehouse-oracle sqlplus system/oracle@//localhost:1521/XEPDB1
