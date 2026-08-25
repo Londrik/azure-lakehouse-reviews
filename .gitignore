@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+env/
+
+# Data & Lakehouse (Armazenamento local)
+data/
+*.parquet
+*.json
+*.csv
+*.tsv
+
+# Environment & Configs
+.env
+
+# Spark & Jupyter
+.ipynb_checkpoints/
+metastore_db/
+spark-warehouse/
+*.log
