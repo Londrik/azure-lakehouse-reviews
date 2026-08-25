@@ -1,0 +1,64 @@
+services:
+  oracle:
+    image: gvenzl/oracle-xe:21-slim-faststart
+    container_name: lakehouse-oracle
+    ports:
+      - "1521:1521"
+    environment:
+      ORACLE_PASSWORD: oracle
+      APP_USER: data_user
+      APP_USER_PASSWORD: data_password
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    volumes:
+      - oracle_data:/opt/oracle/oradata
+
+  minio:
+    image: minio/minio:latest
+    container_name: lakehouse-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    volumes:
+      - minio_data:/data
+
+  mc:
+    image: minio/mc:latest
+    container_name: lakehouse-minio-setup
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until (/usr/bin/mc config host add myminio http://minio:9000 minioadmin minioadmin) do echo 'Waiting for MinIO...' && sleep 1; done;
+      /usr/bin/mc mb myminio/lakehouse --ignore-existing;
+      exit 0;
+      "
+
+  spark:
+    image: jupyter/pyspark-notebook:spark-3.5.0
+    container_name: lakehouse-spark
+    ports:
+      - "8888:8888"
+      - "4040:4040"
+    environment:
+      JUPYTER_ENABLE_LAB: "yes"
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+    volumes:
+      - .:/home/jovyan/work
+
+volumes:
+  minio_data:
+  oracle_data:
