@@ -19,4 +19,4 @@ query-oracle:
 	printf "SET PAGESIZE 50;\nSET LINESIZE 200;\nCOLUMN PRODUCT_ID FORMAT A12;\nCOLUMN PRODUCT_TITLE FORMAT A40;\nSELECT * FROM GOLD_BOOK_REVIEWS;\nEXIT;\n" | docker exec -i lakehouse-oracle sqlplus system/oracle@//localhost:1521/XEPDB1
 
 view-powerbi:
-	printf "SELECT * FROM VW_POWERBI_GOLD_REVIEWS;\nEXIT;\n" | docker exec -i lakehouse-oracle sqlplus system/oracle@//localhost:1521/XEPDB1
+	printf "SET PAGESIZE 50;\nSET LINESIZE 200;\nCOLUMN PRODUCT_ID FORMAT A12;\nCOLUMN PRODUCT_TITLE FORMAT A40;\nSELECT * FROM VW_POWERBI_GOLD_REVIEWS;\nEXIT;\n" | docker exec -i lakehouse-oracle sqlplus system/oracle@//localhost:1521/XEPDB1
