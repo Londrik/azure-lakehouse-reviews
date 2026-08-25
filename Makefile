@@ -1,10 +1,10 @@
 .PHONY: up down status silver gold query-oracle clean
 
 up:
-	docker-compose up -d
+	docker compose up -d
 
 down:
-	docker-compose down
+	docker compose down
 
 status:
 	docker ps
