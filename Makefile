@@ -1,4 +1,4 @@
-.PHONY: up down status bronze silver gold query-oracle clean
+.PHONY: up down status silver gold query-oracle clean
 
 up:
 	docker-compose up -d
