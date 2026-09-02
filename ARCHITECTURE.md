@@ -29,7 +29,7 @@ verified_purchase: string, review_headline: string, review_body: string, review_
 * **Storage Type:** S3 Object (`s3a://lakehouse/silver/amazon_reviews/books/`)
 * **Format:** Columnar Parquet File Structure
 
-root
+````sql
 |-- marketplace: string (nullable = true)
 |-- customer_id: string (nullable = true)
 |-- review_id: string (nullable = true)
@@ -46,7 +46,7 @@ root
 |-- review_body: string (nullable = true)
 |-- review_date: date (nullable = true)
 |-- ingestion_timestamp: timestamp (nullable = false)  
-
+````
 
 ### 2.3. Gold Layer Schema (Relational Data Mart Target)
 * **Storage Type:** Relational Table (`GOLD_BOOK_REVIEWS` on Oracle Instance `XEPDB1`)
