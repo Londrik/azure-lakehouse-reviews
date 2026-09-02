@@ -1,10 +1,10 @@
-# Architecture & Technical Documentation: HDFS/S3 Lakehouse Pipeline
+# Arquitetura & Documentação Técnica: Pipeline Lakehouse HDFS/S3
 
-## 1. System Overview and Topology
+## 1. Visão Geral do Sistema e Topologia
 
-This repository contains the reference implementation of an enterprise Data Lakehouse following the Medallion Architecture pattern. The data processing engine utilizes Apache Spark (PySpark) for distributed transformations across storage tiers (MinIO Object Storage) and relational serving layers (Oracle Enterprise/XE Database).
+Este repositório contém a implementação de referência de um Data Lakehouse empresarial seguindo o padrão de Arquitetura Medalhão. O mecanismo de processamento de dados utiliza Apache Spark (PySpark) para transformações distribuídas entre as camadas de armazenamento (MinIO Object Storage) e as camadas relacionais de consulta (Banco de Dados Oracle Enterprise/XE).
 
-```mermaid
+``` mermaid
 graph TD
     SubGraph1[Storage Layer - Object Store]
     A[Raw Data Ingestion\nTSV Format] -->|MinIO Bucket: s3a://lakehouse/bronze/| B(Bronze Layer)
@@ -19,19 +19,152 @@ graph TD
     style B fill:#d4e6f1,stroke:#333,stroke-width:1px
     style C fill:#d5f5e3,stroke:#333,stroke-width:1px
     style D fill:#fcf3cf,stroke:#333,stroke-width:1px
-2. Software Compatibility Matrix and Environment SpecificationsThe runtime environment requires absolute version parity across driver dependencies and distributed binaries to prevent serialization conflicts (Kryo/Java RMI) and S3A protocol mismatches.ComponentTarget VersionBinaries / Packages SpecifiedExecution ScopeOperating SystemLinux 5.15+ (WSL2/Ubuntu)zsh 5.8+ / Kernel x86_64Host SystemContainer EngineDocker Engine 24.0+Docker Compose v2.20+Runtime IsolationApache Spark3.4.xPySpark Runtime (Python 3.10+)Distributed ComputeHadoop AWS S3A3.3.4org.apache.hadoop:hadoop-aws:3.3.4S3 Connector ProtocolAWS Java SDK1.12.262com.amazonaws:aws-java-sdk-bundle:1.12.262AWS S3 API ClientOracle Database21c XE (21.3.0)Service Name: XEPDB1Serving Data MartOracle JDBC21.9.0.0com.oracle.database.jdbc:ojdbc8:21.9.0.0Relational ConnectorMinIO EngineRELEASE.2023+S3 API V4 ProtocolObject Storage Engine3. Data Flow & Medallion Layer Specifications3.1. Bronze Layer (Raw Storage)Path: s3a://lakehouse/bronze/amazon_reviews/books/data.tsvFormat: Tab-Separated Values (TSV), UTF-8 Encoding.Schema Strategy: Schema-on-Read. Raw text data ingested without mutations.3.2. Silver Layer (Cleaned & Structured)Path: s3a://lakehouse/silver/amazon_reviews/books/Format: Apache Parquet (Snappy Compression).Transformations Applied:Strict type casting: star_rating (Integer), helpful_votes (Integer), total_votes (Integer).Date normalization: review_date parsed via ISO-8601 pattern yyyy-MM-dd.Audit Lineage: Ingestion timestamp append via current_timestamp().Sanitation: Null record eviction where review_id IS NULL.3.3. Gold Layer (Business Aggregations)Target System: Oracle Database (jdbc:oracle:thin:@//oracle:1521/XEPDB1)Table Identifier: GOLD_BOOK_REVIEWSPersistence Strategy: Overwrite Mode via JDBC Batch Writes.4. Mathematical Formulations & Aggregation RulesThe metrics calculated in the Gold Layer pipeline execute under the following formal mathematical definitions:4.1. Average Rating ($\bar{R}$)Given a set of reviews $S_p$ for a specific product $p$, where $r_i$ represents the star rating of review $i$ and $n = |S_p|$ is the total number of reviews for product $p$:$$\bar{R}_p = \text{round}\left( \frac{1}{n} \sum_{i=1}^{n} r_i, 2 \right)$$4.2. Average Helpful Votes ($\bar{H}$)Given $h_i$ as the number of helpful votes for review $i$ within product set $S_p$:$$\bar{H}_p = \text{round}\left( \frac{1}{n} \sum_{i=1}^{n} h_i, 2 \right)$$4.3. Total Reviews Count ($N_p$)$$N_p = \sum_{i \in S_p} 1$$5. Algorithmic Complexity & Big O Analysis5.1. Silver Layer Transformation PipelineLet $N$ be the total number of raw records in the input TSV file, and $M$ be the number of columns per row.Read TSV -> Map Transformation (Cast/Date/Filter) -> Parquet Disk Output
-Time Complexity:Ingestion & Parsing: $\mathcal{O}(N \cdot M)$ to tokenize strings.Row Transformations: $\mathcal{O}(N)$ for column-wise casting and date normalization.Parquet Serialization: $\mathcal{O}(N \cdot M)$ due to columnar conversion and Snappy compression encoding.Overall Time Complexity: $\mathcal{O}(N)$ linear time complexity relative to record count.Space Complexity:In-Memory Transformation: $\mathcal{O}(B \cdot K)$ where $B$ is the execution batch/partition size and $K$ is memory overhead per row. Spark processes records in micro-batches per worker partition, avoiding $\mathcal{O}(N)$ memory footprint.Disk Footprint: $\mathcal{O}(N \cdot C)$ where $C$ is the compressed column size. Parquet columnar compression reduces disk footprint by 60%-80% compared to raw TSV.5.2. Gold Layer Aggregation PipelineLet $N$ be the total number of records in the Silver Parquet dataset, and $U$ be the number of unique products (product_id).Parquet Read -> Shuffle Hash GroupBy(product_id) -> Local/Global Aggregations -> JDBC Write
-Time Complexity:Parquet Read: $\mathcal{O}(N')$, reading only required projection columns (product_id, product_title, star_rating, helpful_votes, review_id).Map-side Partial Aggregation: $\mathcal{O}(N)$ local hash map updates per partition.Network Shuffle Phase: $\mathcal{O}(N \log K)$ where $K$ is the number of Spark shuffle partitions across network.Reduce-side Final Aggregation: $\mathcal{O}(U)$ hash table lookup to compile final statistical means per unique key.JDBC Batch Insert: $\mathcal{O}(U)$ database execution time.Overall Time Complexity: $\mathcal{O}(N + U \log U)$ bounded by shuffle operations.Space Complexity:Shuffle Memory: $\mathcal{O}(U)$ auxiliary memory needed to store unique keys across executors.Database Memory: $\mathcal{O}(U)$ space allocated inside the target Oracle Database tablespace.6. Execution Guide and Environment Bootstrap6.1. System ProvisioningInitialize containerized services within the defined network bridge:Bash# Directory Context: ~/projects/azure-lakehouse-reviews
+````
+## 2. Matriz de Compatibilidade de Software e Especificações do Ambiente
+
+O ambiente de execução requer paridade absoluta de versões entre as dependências dos drivers e os binários distribuídos para evitar conflitos de serialização (Kryo/Java RMI) e incompatibilidades no protocolo S3A.
+
+| Componente | Versão Alvo | Binários / Pacotes Especificados | Escopo de Execução |
+| :--- | :--- | :--- | :--- |
+| **Sistema Operacional** | Linux 5.15+ (WSL2/Ubuntu) | zsh 5.8+ / Kernel x86_64 | Sistema Hospedeiro |
+| **Mecanismo de Contêineres** | Docker Engine 24.0+ | Docker Compose v2.20+ | Isolamento de Runtime |
+| **Apache Spark** | 3.4.x | PySpark Runtime (Python 3.10+) | Computação Distribuída |
+| **Hadoop AWS S3A** | 3.3.4 | `org.apache.hadoop:hadoop-aws:3.3.4` | Conector do Protocolo S3 |
+| **AWS Java SDK** | 1.12.262 | `com.amazonaws:aws-java-sdk-bundle:1.12.262` | Cliente API AWS S3 |
+| **Banco de Dados Oracle** | 21c XE (21.3.0) | Nome do Serviço: `XEPDB1` | Data Mart de Servimento |
+| **Oracle JDBC** | 21.9.0.0 | `com.oracle.database.jdbc:ojdbc8:21.9.0.0` | Conector Relacional |
+| **Mecanismo MinIO** | RELEASE.2023+ | Protocolo S3 API V4 | Mecanismo de Armazenamento de Objetos |
+
+## 3. Fluxo de Dados & Especificações da Camada Medalhão
+
+### 3.1. Camada Bronze (Armazenamento Bruto)
+* **Caminho:** `s3a://lakehouse/bronze/amazon_reviews/books/data.tsv`
+* **Formato:** Valoração Separada por Tabulação (TSV), Codificação UTF-8.
+* **Estratégia de Schema:** Schema-on-Read. Dados brutos em texto ingeridos sem mutações.
+
+### 3.2. Camada Silver (Limpa & Estruturada)
+* **Caminho:** `s3a://lakehouse/silver/amazon_reviews/books/`
+* **Formato:** Apache Parquet (Compactação Snappy).
+* **Transformações Aplicadas:**
+  * **Tipagem estrita:** `star_rating` (Integer), `helpful_votes` (Integer), `total_votes` (Integer).
+  * **Normalização de data:** `review_date` analisado via padrão ISO-8601 (`yyyy-MM-dd`).
+  * **Linhagem de Auditoria:** Anexo do timestamp de ingestão via `current_timestamp()`.
+  * **Saneamento:** Remoção de registros nulos onde `review_id IS NULL`.
+
+### 3.3. Camada Gold (Agregações de Negócio)
+* **Sistema Alvo:** Banco de Dados Oracle (`jdbc:oracle:thin:@//oracle:1521/XEPDB1`)
+* **Identificador da Tabela:** `GOLD_BOOK_REVIEWS`
+* **Estratégia de Persistência:** Modo Overwrite via gravações JDBC em lote (Batch Writes).
+
+---
+
+## 4. Formulações Matemáticas & Regras de Agregação
+
+As métricas calculadas no pipeline da Camada Gold executam sob as seguintes definições matemáticas formais:
+
+### 4.1. Avaliação Média ($\bar{R}$)
+Dado um conjunto de avaliações $S_p$ para um produto específico $p$, onde $r_i$ representa a nota em estrelas da avaliação $i$ e $n = \vert{}S_p\vert{}$ é o total de avaliações para o produto $p$:
+
+$$\bar{R}_p = \text{round}\left( \frac{1}{n} \sum_{i=1}^{n} r_i, 2 \right)$$
+
+### 4.2. Média de Votos Úteis ($\bar{H}$)
+Dado $h_i$ como o número de votos úteis para a avaliação $i$ dentro do conjunto de produtos $S_p$:
+
+$$\bar{H}_p = \text{round}\left( \frac{1}{n} \sum_{i=1}^{n} h_i, 2 \right)$$
+
+### 4.3. Contagem Total de Avaliações ($N_p$)
+
+$$N_p = \sum_{i \in S_p} 1$$
+
+---
+
+## 5. Complexidade Algorítmica & Análise Big O
+
+### 5.1. Pipeline de Transformação da Camada Silver
+Considere $N$ como o número total de registros brutos no arquivo TSV de entrada, e $M$ como o número de colunas por linha.
+
+Leitura TSV -> Mapeamento de Transformação (Cast/Data/Filtro) -> Saída em Disco Parquet
+
+Complexidade de Tempo
+
+Ingestão & Parsing: O(N⋅M) para tokenizar as strings.
+
+Transformações de Linha: O(N) para conversão de colunas e normalização de datas.
+
+Serialização Parquet: O(N⋅M) devido à conversão colunar e codificação de compactação Snappy.
+
+Complexidade de Tempo Geral: O(N) complexidade de tempo linear relativa à contagem de registros.
+
+Complexidade de Espaço
+
+Transformação em Memória: O(B⋅K) onde B é o tamanho do lote/partição de execução e K é a sobrecarga de memória por linha. O Spark processa registros em micro-lotes por partição de worker, evitando footprint de memória O(N).
+
+Espaço em Disco: O(N⋅C) onde C é o tamanho da coluna compactada. A compactação colunar do Parquet reduz o uso de disco em 60%-80% em comparação ao TSV bruto.
+
+5.2. Pipeline de Agregação da Camada Gold
+
+Considere N como o número total de registros no dataset Silver Parquet, e U como o número de produtos únicos (product_id).
+Plaintext
+
+Leitura Parquet -> Shuffle Hash GroupBy(product_id) -> Agregações Locais/Globais -> Escrita JDBC
+
+Complexidade de Tempo
+
+Leitura Parquet: O(N′), lendo apenas as colunas projetadas necessárias (product_id, product_title, star_rating, helpful_votes, review_id).
+
+Agregação Parcial no Map-side: O(N) atualizações locais na tabela hash por partição.
+
+Fase de Shuffle na Rede: O(NlogK) onde K é o número de partições de shuffle do Spark na rede.
+
+Agregação Final no Reduce-side: Consulta em tabela hash O(U) para compilar as médias estatísticas finais por chave única.
+
+Inserção JDBC em Lote: Tempo de execução do banco de dados em O(U).
+
+Complexidade de Tempo Geral: O(N+UlogU) delimitada por operações de shuffle.
+
+Complexidade de Espaço
+
+Memória de Shuffle: Memória auxiliar O(U) necessária para armazenar chaves únicas entre os executores.
+
+Memória do Banco de Dados: Espaço O(U) alocado dentro do tablespace do Banco de Dados Oracle alvo.
+
+6. Guia de Execução e Inicialização do Ambiente
+6.1. Provisionamento do Sistema
+
+Inicialize os serviços em contêineres dentro da bridge de rede definida:
+````Bash
+
+# Contexto do Diretório: ~/projects/azure-lakehouse-reviews
 docker-compose up -d
-6.2. Execution of Silver Pipeline ProcessingSubmit PySpark Job for Bronze-to-Silver ETL:Bash# Directory Context: ~/projects/azure-lakehouse-reviews
+````
+
+6.2. Execução do Pipeline da Camada Silver
+
+Submeta o job PySpark para o ETL de Bronze para Silver:
+````Bash
+
+# Contexto do Diretório: ~/projects/azure-lakehouse-reviews
 docker exec -it lakehouse-spark spark-submit \
   --packages org.apache.hadoop:hadoop-aws:3.3.4 \
   /home/jovyan/work/process_silver.py
-6.3. Execution of Gold Pipeline AggregationSubmit PySpark Job for Silver-to-Gold aggregation and Oracle JDBC stream:Bash# Directory Context: ~/projects/azure-lakehouse-reviews
+````
+6.3. Execução da Agregação da Camada Gold
+
+Submeta o job PySpark para a agregação de Silver para Gold e fluxo JDBC do Oracle:
+
+````Bash
+# Contexto do Diretório: ~/projects/azure-lakehouse-reviews
 docker exec -it lakehouse-spark spark-submit \
   --packages org.apache.hadoop:hadoop-aws:3.3.4,com.oracle.database.jdbc:ojdbc8:21.9.0.0 \
   /home/jovyan/work/process_gold.py
-6.4. Serving Layer VerificationQuery the target relational schema inside Oracle Enterprise Engine:Bash# Directory Context: ~/projects/azure-lakehouse-reviews
+````
+
+6.4. Verificação da Camada de Consulta
+
+Consulte o schema relacional alvo dentro do motor Oracle Enterprise:
+````Bash
+
+# Contexto do Diretório: ~/projects/azure-lakehouse-reviews
 docker exec -i lakehouse-oracle sqlplus system/oracle@//localhost:1521/XEPDB1 << 'EOF'
 SET PAGESIZE 50;
 SET LINESIZE 200;
@@ -39,3 +172,5 @@ COLUMN PRODUCT_ID FORMAT A12;
 COLUMN PRODUCT_TITLE FORMAT A40;
 SELECT * FROM GOLD_BOOK_REVIEWS;
 EXIT;
+EOF
+````
