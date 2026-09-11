@@ -9,7 +9,7 @@ st.set_page_config(
 )
 
 st.title("Lakehouse Analytics - Camada Gold")
-st.caption("Painel analítico operacional com DuckDB Pushdown e alocação controlada de memória sobre o MinIO.")
+st.caption("Painel analitico operacional com DuckDB Pushdown e alocacao controlada de memoria sobre o MinIO.")
 
 @st.cache_resource
 def get_duckdb_connection():
@@ -75,32 +75,32 @@ with st.spinner("Computando indicadores agregados..."):
 st.subheader("Indicadores de Escala e Centralidade")
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 kpi1.metric("SKUs Catalogados", f"{kpis['products']:,}")
-kpi2.metric("Avaliações Consolidadas", f"{kpis['reviews']:,}")
-kpi3.metric("Séries Temporais (Mês)", f"{kpis['monthly']:,}")
-kpi4.metric("Avaliadores Únicos", f"{kpis['reviewers']:,}")
-kpi5.metric("Média Ponderada Global", f"{kpis['rating']:.2f} / 5.00")
+kpi2.metric("Avaliacoes Consolidadas", f"{kpis['reviews']:,}")
+kpi3.metric("Series Temporais (Mes)", f"{kpis['monthly']:,}")
+kpi4.metric("Avaliadores Unicos", f"{kpis['reviewers']:,}")
+kpi5.metric("Media Ponderada Global", f"{kpis['rating']:.2f} / 5.00")
 
 st.divider()
 
 tab1, tab2, tab3, tab4 = st.tabs([
-    "Diagnóstico de Qualidade e Risco",
-    "Séries Temporais e Volatilidade",
+    "Diagnostico de Qualidade e Risco",
+    "Series Temporais e Volatilidade",
     "Comportamento de Consumo",
-    "Inspeção Tabular de Dados"
+    "Inspecao Tabular de Dados"
 ])
 
 with tab1:
-    st.subheader("Análise de Dispersão e Taxa de Rejeição")
+    st.subheader("Analise de Dispersao e Taxa de Rejeicao")
     st.markdown("""
-    **Finalidade Técnica:** Identificar anomalias de satisfação e priorizar intervenções de catálogo.  
-    A taxa de rejeição quantifica a proporção de avaliações com nota menor ou igual a 2.0.
+    Finalidade Tecnica: Identificar anomalias de satisfacao e priorizar intervencoes de catalogo.  
+    A taxa de rejeicao quantifica a proporcao de avaliacoes com nota menor ou igual a 2.0.
     """)
     
     f_col1, f_col2 = st.columns(2)
     with f_col1:
-        min_rev_filter = st.slider("Corte Mínimo de Avaliações por SKU (Filtro de Significância):", 1, 500, 15)
+        min_rev_filter = st.slider("Corte Minimo de Avaliacoes por SKU (Filtro de Significancia):", 1, 500, 15)
     with f_col2:
-        top_n = st.selectbox("Amostragem de Registros Críticos:", [10, 20, 50], index=1)
+        top_n = st.selectbox("Amostragem de Registros Criticos:", [10, 20, 50], index=1)
 
     query_tab1 = f"""
         SELECT asin, total_reviews, avg_rating, rejection_rate_pct 
@@ -127,12 +127,12 @@ with tab1:
                 x='asin',
                 y='rejection_rate_pct',
                 color='avg_rating',
-                title=f"Top {top_n} Produtos com Maior Rejeição (Score <= 2.0)",
-                labels={'asin': 'Código ASIN', 'rejection_rate_pct': 'Taxa de Rejeição (%)', 'avg_rating': 'Nota Média'},
+                title=f"Top {top_n} Produtos com Maior Rejeicao (Score <= 2.0)",
+                labels={'asin': 'Codigo ASIN', 'rejection_rate_pct': 'Taxa de Rejeicao (%)', 'avg_rating': 'Nota Media'},
                 color_continuous_scale='Turbo'
             )
             st.plotly_chart(fig_rej, width='stretch')
-            st.caption("Interpretação: SKUs com barras elevadas demandam auditoria de conformidade de catálogo.")
+            st.caption("Interpretacao: SKUs com barras elevadas demandam auditoria de conformidade de catalogo.")
         else:
             st.info("Nenhum registro localizado para o filtro selecionado.")
 
@@ -146,17 +146,17 @@ with tab1:
                 color='rejection_rate_pct',
                 hover_name='asin',
                 log_x=True,
-                title="Relação Volume vs Nota Média (Amostra Estatística de 1.000 SKUs)",
-                labels={'total_reviews': 'Total de Avaliações (Log)', 'avg_rating': 'Nota Média', 'rejection_rate_pct': 'Rejeição %'},
+                title="Relacao Volume vs Nota Media (Amostra Estatistica de 1.000 SKUs)",
+                labels={'total_reviews': 'Total de Avaliacoes (Log)', 'avg_rating': 'Nota Media', 'rejection_rate_pct': 'Rejeicao %'},
                 color_continuous_scale='Reds'
             )
             st.plotly_chart(fig_scatter, width='stretch')
-            st.caption("Interpretação: Permite diferenciar produtos polarizados de produtos estabilizados com alto volume.")
+            st.caption("Interpretacao: Permite diferenciar produtos polarizados de produtos estabilizados com alto volume.")
 
 with tab2:
-    st.subheader("Análise Longitudinal e Sazonalidade")
+    st.subheader("Analise Longitudinal e Sazonalidade")
     st.markdown("""
-    **Finalidade Técnica:** Acompanhar a evolução temporal de satisfação dos SKUs com alto volume amostral.
+    Finalidade Tecnica: Acompanhar a evolucao temporal de satisfacao dos SKUs com alto volume amostral.
     """)
     
     top_asins = con.execute("""
@@ -167,7 +167,7 @@ with tab2:
     """).df()['asin'].tolist()
 
     if top_asins:
-        selected_asin = st.selectbox("Selecione o ASIN Alvo para Decomposição Temporal:", top_asins)
+        selected_asin = st.selectbox("Selecione o ASIN Alvo para Decomposicao Temporal:", top_asins)
         
         query_trend = f"""
             SELECT 
@@ -188,11 +188,11 @@ with tab2:
                     x='periodo',
                     y='monthly_avg_rating',
                     markers=True,
-                    title=f"Nota Média Mensal - ASIN: {selected_asin}",
-                    labels={'periodo': 'Ano-Mês', 'monthly_avg_rating': 'Nota Média'}
+                    title=f"Nota Media Mensal - ASIN: {selected_asin}",
+                    labels={'periodo': 'Ano-Mes', 'monthly_avg_rating': 'Nota Media'}
                 )
                 st.plotly_chart(fig_trend, width='stretch')
-                st.caption("Interpretação: Oscilações bruscas indicam eventos pontuais de insatisfação.")
+                st.caption("Interpretacao: Oscilacoes bruscas indicam eventos pontuais de insatisfacao.")
             else:
                 st.info("Sem dados temporais para o ASIN selecionado.")
 
@@ -202,21 +202,20 @@ with tab2:
                     df_target,
                     x='periodo',
                     y='monthly_reviews',
-                    title=f"Volume de Avaliações Mensais - ASIN: {selected_asin}",
-                    labels={'periodo': 'Ano-Mês', 'monthly_reviews': 'Avaliações Submetidas'}
+                    title=f"Volume de Avaliacoes Mensais - ASIN: {selected_asin}",
+                    labels={'periodo': 'Ano-Mes', 'monthly_reviews': 'Avaliacoes Submetidas'}
                 )
                 st.plotly_chart(fig_v, width='stretch')
-                st.caption("Interpretação: Avalia a significância estatística das notas ao longo do tempo.")
+                st.caption("Interpretacao: Avalia a significancia estatistica das notas ao longo do tempo.")
     else:
         st.warning("Nenhum ASIN identificado na camada Gold.")
 
 with tab3:
-    st.subheader("Assimetria de Distribuição e Engajamento")
+    st.subheader("Assimetria de Distribuicao e Engajamento")
     st.markdown("""
-    **Finalidade Técnica:** Segmentação do comportamento dos avaliadores através de histogramas agregados via DuckDB.
+    Finalidade Tecnica: Segmentacao do comportamento dos avaliadores atraves de histogramas agregados via DuckDB.
     """)
     
-    # Detecção dinâmica da coluna de contagem na camada Gold
     sample_reviewer = con.execute("SELECT * FROM v_reviewers LIMIT 1").df()
     
     col_rev_count = "total_reviews_by_reviewer"
@@ -245,31 +244,31 @@ with tab3:
                 df_rev_sample[df_rev_sample['total_reviews_written'] <= p99],
                 x='total_reviews_written',
                 nbins=30,
-                title=f"Histograma de Contribuição por Avaliador (Truncado no P99: {p99})",
-                labels={'total_reviews_written': 'Reviews Escritos por Usuário'}
+                title=f"Histograma de Contribuicao por Avaliador (Truncado no P99: {p99})",
+                labels={'total_reviews_written': 'Reviews Escritos por Usuario'}
             )
             st.plotly_chart(fig_user_vol, width='stretch')
-            st.caption("Interpretação: Demonstra o comportamento de cauda longa na geração de avaliações.")
+            st.caption("Interpretacao: Demonstra o comportamento de cauda longa na geracao de avaliacoes.")
 
         with c_r2:
             fig_user_rates = px.histogram(
                 df_rev_sample,
                 x='avg_rating_given',
                 nbins=20,
-                title="Distribuição das Notas Médias Atribuídas pelos Avaliadores",
-                labels={'avg_rating_given': 'Nota Média Fornecida'}
+                title="Distribuicao das Notas Medias Atribuidas pelos Avaliadores",
+                labels={'avg_rating_given': 'Nota Media Fornecida'}
             )
             st.plotly_chart(fig_user_rates, width='stretch')
-            st.caption("Interpretação: Mensura viés de severidade ou leniência na comunidade.")
+            st.caption("Interpretacao: Mensura vies de severidade ou leniencia na comunidade.")
     else:
-        st.warning("Tabela `reviewer_metrics` vazia ou colunas não compatíveis.")
+        st.warning("Tabela reviewer_metrics vazia ou colunas nao compativeis.")
 
 with tab4:
     st.subheader("Auditoria dos Registros (Engine OLAP - Limit 100)")
-    st.markdown("Inspeção paginada diretamente dos arquivos Parquet para evitar saturação de memória RAM.")
+    st.markdown("Inspecao paginada diretamente dos arquivos Parquet para evitar saturacao de memoria RAM.")
     
     inspect_table = st.radio(
-        "Selecione o Data Lakehouse Layer para Inspeção:", 
+        "Selecione o Data Lakehouse Layer para Inspecao:", 
         ["product_metrics", "monthly_product_metrics", "reviewer_metrics"], 
         horizontal=True
     )
