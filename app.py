@@ -11,14 +11,17 @@ st.set_page_config(
 st.title("Lakehouse Analytics - Camada Gold")
 st.caption("Painel analitico operacional com DuckDB Pushdown e alocacao controlada de memoria sobre o MinIO.")
 
-@st.cache_resource
+# -----------------------------------------------------------------------------
+# 1. Conexao DuckDB com MinIO via httpfs (Cacheada e Otimizada)
+# -----------------------------------------------------------------------------
+@st.cache_resource(show_spinner=False)
 def get_duckdb_connection():
-    con = duckdb.connect()
+    con = duckdb.connect(database=":memory:", read_only=False)
     try:
         con.execute("LOAD httpfs;")
     except Exception:
         con.execute("INSTALL httpfs; LOAD httpfs;")
-    
+
     con.execute("""
         SET s3_endpoint='localhost:9000';
         SET s3_access_key_id='minioadmin';
@@ -27,13 +30,10 @@ def get_duckdb_connection():
         SET s3_url_style='path';
         SET max_memory='1GB';
         SET preserve_insertion_order=false;
+        SET threads=4;
     """)
-    return con
 
-con = get_duckdb_connection()
-
-@st.cache_resource
-def setup_views():
+    # Views analiticas desacopladas com leitura colunar recursiva
     con.execute("""
         CREATE OR REPLACE VIEW v_products AS 
         SELECT * FROM read_parquet('s3://lakehouse/gold/product_metrics/**/*.parquet', hive_partitioning=true);
@@ -44,31 +44,107 @@ def setup_views():
         CREATE OR REPLACE VIEW v_reviewers AS 
         SELECT * FROM read_parquet('s3://lakehouse/gold/reviewer_metrics/**/*.parquet', hive_partitioning=true);
     """)
+    return con
 
-setup_views()
+con = get_duckdb_connection()
 
-@st.cache_data(ttl=600)
+# -----------------------------------------------------------------------------
+# 2. Funcoes de Carga e Agregacao Otimizadas (Pushdown + Cache TTL)
+# -----------------------------------------------------------------------------
+@st.cache_data(ttl=600, show_spinner=False)
 def get_global_kpis():
-    query = """
+    query_prod = """
         SELECT 
-            COUNT(*) AS total_products,
+            COUNT(asin) AS total_products,
             COALESCE(SUM(total_reviews), 0) AS total_reviews_sum,
             COALESCE(AVG(avg_rating), 0.0) AS global_avg_rating
         FROM v_products
     """
-    df_prod_kpis = con.execute(query).df()
-    
-    total_monthly = con.execute("SELECT COUNT(*) AS total FROM v_monthly").fetchone()[0]
-    total_reviewers = con.execute("SELECT COUNT(*) AS total FROM v_reviewers").fetchone()[0]
-    
+    df_prod_kpis = con.execute(query_prod).df()
+    total_monthly = con.execute("SELECT COUNT(asin) AS total FROM v_monthly").fetchone()[0]
+    total_reviewers = con.execute("SELECT COUNT(reviewerID) AS total FROM v_reviewers").fetchone()[0]
+
     return {
-        "products": int(df_prod_kpis["total_products"][0]),
-        "reviews": int(df_prod_kpis["total_reviews_sum"][0]),
-        "rating": float(df_prod_kpis["global_avg_rating"][0]),
+        "products": int(df_prod_kpis["total_products"].iloc[0]),
+        "reviews": int(df_prod_kpis["total_reviews_sum"].iloc[0]),
+        "rating": float(df_prod_kpis["global_avg_rating"].iloc[0]),
         "monthly": int(total_monthly),
         "reviewers": int(total_reviewers)
     }
 
+@st.cache_data(ttl=300, show_spinner=False)
+def load_top_rejected_products(min_rev: int, limit: int):
+    query = """
+        SELECT asin, total_reviews, avg_rating, rejection_rate_pct 
+        FROM v_products 
+        WHERE total_reviews >= ?
+        ORDER BY rejection_rate_pct DESC 
+        LIMIT ?
+    """
+    return con.execute(query, [min_rev, limit]).df()
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_scatter_sample(min_rev: int, sample_size: int = 1000):
+    query = f"""
+        SELECT asin, total_reviews, avg_rating, rejection_rate_pct 
+        FROM v_products 
+        WHERE total_reviews >= ?
+        USING SAMPLE {sample_size}
+    """
+    return con.execute(query, [min_rev]).df()
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_available_asins(limit: int = 30):
+    query = """
+        SELECT asin 
+        FROM v_products 
+        ORDER BY total_reviews DESC 
+        LIMIT ?
+    """
+    return con.execute(query, [limit]).df()["asin"].tolist()
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_asin_monthly_trend(selected_asin: str):
+    query = """
+        SELECT 
+            PRINTF('%d-%02d', review_year, review_month) AS periodo,
+            monthly_reviews,
+            monthly_avg_rating
+        FROM v_monthly
+        WHERE asin = ?
+        ORDER BY review_year, review_month
+    """
+    return con.execute(query, [selected_asin]).df()
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_reviewer_sample(sample_size: int = 50000):
+    # Deteccao dinamica de esquema via metadados puros (sem leitura de dados)
+    columns_info = con.execute("DESCRIBE v_reviewers").df()["column_name"].tolist()
+
+    col_rev_count = "total_reviews_by_reviewer"
+    if "total_reviews_written" in columns_info:
+        col_rev_count = "total_reviews_written"
+    elif "total_reviews" in columns_info:
+        col_rev_count = "total_reviews"
+
+    col_rev_rating = "avg_rating_given" if "avg_rating_given" in columns_info else "avg_rating"
+
+    query = f"""
+        SELECT 
+            {col_rev_count} AS total_reviews_written, 
+            {col_rev_rating} AS avg_rating_given
+        FROM v_reviewers
+        USING SAMPLE {sample_size}
+    """
+    return con.execute(query).df()
+
+@st.cache_data(ttl=120, show_spinner=False)
+def load_table_sample(view_name: str, limit: int = 100):
+    return con.execute(f"SELECT * FROM {view_name} LIMIT ?", [limit]).df()
+
+# -----------------------------------------------------------------------------
+# 3. Renderizacao da Interface
+# -----------------------------------------------------------------------------
 with st.spinner("Computando indicadores agregados..."):
     kpis = get_global_kpis()
 
@@ -95,29 +171,15 @@ with tab1:
     Finalidade Tecnica: Identificar anomalias de satisfacao e priorizar intervencoes de catalogo.  
     A taxa de rejeicao quantifica a proporcao de avaliacoes com nota menor ou igual a 2.0.
     """)
-    
+
     f_col1, f_col2 = st.columns(2)
     with f_col1:
         min_rev_filter = st.slider("Corte Minimo de Avaliacoes por SKU (Filtro de Significancia):", 1, 500, 15)
     with f_col2:
         top_n = st.selectbox("Amostragem de Registros Criticos:", [10, 20, 50], index=1)
 
-    query_tab1 = f"""
-        SELECT asin, total_reviews, avg_rating, rejection_rate_pct 
-        FROM v_products 
-        WHERE total_reviews >= {min_rev_filter}
-        ORDER BY rejection_rate_pct DESC 
-        LIMIT {top_n}
-    """
-    df_top_rej = con.execute(query_tab1).df()
-
-    query_sample = f"""
-        SELECT asin, total_reviews, avg_rating, rejection_rate_pct 
-        FROM v_products 
-        WHERE total_reviews >= {min_rev_filter}
-        USING SAMPLE 1000
-    """
-    df_sample_scatter = con.execute(query_sample).df()
+    df_top_rej = load_top_rejected_products(min_rev_filter, top_n)
+    df_sample_scatter = load_scatter_sample(min_rev_filter, 1000)
 
     c1, c2 = st.columns(2)
     with c1:
@@ -158,27 +220,12 @@ with tab2:
     st.markdown("""
     Finalidade Tecnica: Acompanhar a evolucao temporal de satisfacao dos SKUs com alto volume amostral.
     """)
-    
-    top_asins = con.execute("""
-        SELECT asin 
-        FROM v_products 
-        ORDER BY total_reviews DESC 
-        LIMIT 30
-    """).df()['asin'].tolist()
+
+    top_asins = load_available_asins(30)
 
     if top_asins:
         selected_asin = st.selectbox("Selecione o ASIN Alvo para Decomposicao Temporal:", top_asins)
-        
-        query_trend = f"""
-            SELECT 
-                PRINTF('%d-%02d', review_year, review_month) AS periodo,
-                monthly_reviews,
-                monthly_avg_rating
-            FROM v_monthly
-            WHERE asin = '{selected_asin}'
-            ORDER BY review_year, review_month
-        """
-        df_target = con.execute(query_trend).df()
+        df_target = load_asin_monthly_trend(selected_asin)
 
         c_time1, c_time2 = st.columns(2)
         with c_time1:
@@ -215,29 +262,13 @@ with tab3:
     st.markdown("""
     Finalidade Tecnica: Segmentacao do comportamento dos avaliadores atraves de histogramas agregados via DuckDB.
     """)
-    
-    sample_reviewer = con.execute("SELECT * FROM v_reviewers LIMIT 1").df()
-    
-    col_rev_count = "total_reviews_by_reviewer"
-    if "total_reviews_written" in sample_reviewer.columns:
-        col_rev_count = "total_reviews_written"
-    elif "total_reviews" in sample_reviewer.columns:
-        col_rev_count = "total_reviews"
-    
-    col_rev_rating = "avg_rating_given" if "avg_rating_given" in sample_reviewer.columns else "avg_rating"
 
-    df_rev_sample = con.execute(f"""
-        SELECT 
-            {col_rev_count} AS total_reviews_written, 
-            {col_rev_rating} AS avg_rating_given
-        FROM v_reviewers
-        USING SAMPLE 50000
-    """).df()
+    df_rev_sample = load_reviewer_sample(50000)
 
-    if not df_rev_sample.empty:
+    if not df_rev_sample.empty and "total_reviews_written" in df_rev_sample.columns:
         p99 = int(df_rev_sample['total_reviews_written'].quantile(0.99))
         p99 = max(p99, 10)
-        
+
         c_r1, c_r2 = st.columns(2)
         with c_r1:
             fig_user_vol = px.histogram(
@@ -266,18 +297,18 @@ with tab3:
 with tab4:
     st.subheader("Auditoria dos Registros (Engine OLAP - Limit 100)")
     st.markdown("Inspecao paginada diretamente dos arquivos Parquet para evitar saturacao de memoria RAM.")
-    
+
     inspect_table = st.radio(
         "Selecione o Data Lakehouse Layer para Inspecao:", 
         ["product_metrics", "monthly_product_metrics", "reviewer_metrics"], 
         horizontal=True
     )
-    
+
     view_map = {
         "product_metrics": "v_products",
         "monthly_product_metrics": "v_monthly",
         "reviewer_metrics": "v_reviewers"
     }
-    
-    sample_df = con.execute(f"SELECT * FROM {view_map[inspect_table]} LIMIT 100").df()
+
+    sample_df = load_table_sample(view_map[inspect_table], 100)
     st.dataframe(sample_df, height=350)
