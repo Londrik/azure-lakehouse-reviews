@@ -4,15 +4,13 @@ import plotly.express as px
 import pandas as pd
 
 st.set_page_config(
-    page_title="Lakehouse Reviews - Gold Dashboard",
-    page_icon="📊",
+    page_title="Lakehouse Reviews - Gold Analytics Engine",
     layout="wide"
 )
 
-st.title("📊 Lakehouse Analytics - Métricas Gold")
-st.markdown("Visão executiva das métricas salvas no MinIO via DuckDB.")
+st.title("Lakehouse Analytics - Camada Gold")
+st.caption("Painel analítico operacional com DuckDB Pushdown e alocação controlada de memória sobre o MinIO.")
 
-# Conexão DuckDB com MinIO (S3 Local)
 @st.cache_resource
 def get_duckdb_connection():
     con = duckdb.connect()
@@ -27,157 +25,249 @@ def get_duckdb_connection():
         SET s3_secret_access_key='minioadmin';
         SET s3_use_ssl=false;
         SET s3_url_style='path';
+        SET max_memory='1GB';
+        SET preserve_insertion_order=false;
     """)
     return con
 
 con = get_duckdb_connection()
 
-# Carregamento com busca recursiva e hive_partitioning
+# Criação de Views Lazy (Zero carregamento prévio em RAM)
+@st.cache_resource
+def setup_views():
+    con.execute("""
+        CREATE OR REPLACE VIEW v_products AS 
+        SELECT * FROM read_parquet('s3://lakehouse/gold/product_metrics/**/*.parquet', hive_partitioning=true);
+        
+        CREATE OR REPLACE VIEW v_monthly AS 
+        SELECT * FROM read_parquet('s3://lakehouse/gold/monthly_product_metrics/**/*.parquet', hive_partitioning=true);
+        
+        CREATE OR REPLACE VIEW v_reviewers AS 
+        SELECT * FROM read_parquet('s3://lakehouse/gold/reviewer_metrics/**/*.parquet', hive_partitioning=true);
+    """)
+
+setup_views()
+
+# Agregações leves direto no DuckDB (Pushdown)
 @st.cache_data(ttl=600)
-def load_gold_data():
-    queries = {
-        "products": "SELECT * FROM read_parquet('s3://lakehouse/gold/product_metrics/**/*.parquet', hive_partitioning=true)",
-        "monthly": "SELECT * FROM read_parquet('s3://lakehouse/gold/monthly_product_metrics/**/*.parquet', hive_partitioning=true)",
-        "reviewers": "SELECT * FROM read_parquet('s3://lakehouse/gold/reviewer_metrics/**/*.parquet', hive_partitioning=true)"
-    }
+def get_global_kpis():
+    query = """
+        SELECT 
+            COUNT(*) AS total_products,
+            COALESCE(SUM(total_reviews), 0) AS total_reviews_sum,
+            COALESCE(AVG(avg_rating), 0.0) AS global_avg_rating
+        FROM v_products
+    """
+    df_prod_kpis = con.execute(query).df()
     
-    data = {}
-    for name, query in queries.items():
-        try:
-            data[name] = con.execute(query).df()
-        except Exception as e:
-            st.error(f"Erro ao carregar dados de `{name}`: {e}")
-            data[name] = pd.DataFrame()
-            
-    return data["products"], data["monthly"], data["reviewers"]
+    total_monthly = con.execute("SELECT COUNT(*) AS total FROM v_monthly").fetchone()[0]
+    total_reviewers = con.execute("SELECT COUNT(*) AS total FROM v_reviewers").fetchone()[0]
+    
+    return {
+        "products": int(df_prod_kpis["total_products"][0]),
+        "reviews": int(df_prod_kpis["total_reviews_sum"][0]),
+        "rating": float(df_prod_kpis["global_avg_rating"][0]),
+        "monthly": int(total_monthly),
+        "reviewers": int(total_reviewers)
+    }
 
-with st.spinner("Carregando tabelas Gold do MinIO..."):
-    df_products, df_monthly, df_reviewers = load_gold_data()
+with st.spinner("Computando indicadores agregados..."):
+    kpis = get_global_kpis()
 
-# 1. KPI Cards Gerais
-st.subheader("📌 Indicadores Gerais")
-col1, col2, col3, col4 = st.columns(4)
-
-total_products = len(df_products)
-total_monthly_records = len(df_monthly)
-total_reviewers = len(df_reviewers)
-global_avg_rating = df_products['avg_rating'].mean() if 'avg_rating' in df_products.columns and not df_products.empty else 0.0
-
-col1.metric("Total de Produtos Únicos", f"{total_products:,}")
-col2.metric("Pontos Mensais Agregados", f"{total_monthly_records:,}")
-col3.metric("Total de Avaliadores", f"{total_reviewers:,}")
-col4.metric("Nota Média Global", f"{global_avg_rating:.2f} ⭐")
+st.subheader("Indicadores de Escala e Centralidade")
+kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+kpi1.metric("SKUs Catalogados", f"{kpis['products']:,}")
+kpi2.metric("Avaliações Consolidadas", f"{kpis['reviews']:,}")
+kpi3.metric("Séries Temporais (Mês)", f"{kpis['monthly']:,}")
+kpi4.metric("Avaliadores Únicos", f"{kpis['reviewers']:,}")
+kpi5.metric("Média Ponderada Global", f"{kpis['rating']:.2f} / 5.00")
 
 st.divider()
 
-# 2. Visualizações em Abas
-tab1, tab2, tab3 = st.tabs(["📦 Produtos & Rejeição", "📈 Tendência Temporal", "👤 Perfis de Avaliadores"])
+tab1, tab2, tab3, tab4 = st.tabs([
+    "Diagnóstico de Qualidade e Risco",
+    "Séries Temporais e Volatilidade",
+    "Comportamento de Consumo",
+    "Inspeção Tabular de Dados"
+])
 
 with tab1:
-    st.subheader("Top Produtos por Taxa de Rejeição (%)")
+    st.subheader("Análise de Dispersão e Taxa de Rejeição")
+    st.markdown("""
+    **Finalidade Técnica:** Identificar anomalias de satisfação e priorizar intervenções de catálogo.  
+    A taxa de rejeição quantifica a proporção de avaliações com nota menor ou igual a 2.0.
+    """)
     
-    if not df_products.empty and {'asin', 'total_reviews', 'rejection_rate_pct'}.issubset(df_products.columns):
-        max_vol = int(df_products['total_reviews'].max()) if df_products['total_reviews'].max() > 1 else 100
-        min_reviews = st.slider("Mínimo de avaliações recebidas:", min_value=1, max_value=min(max_vol, 500), value=min(10, max_vol))
-        
-        df_filtered = df_products[df_products['total_reviews'] >= min_reviews].sort_values(
-            by='rejection_rate_pct', ascending=False
-        ).head(15)
-        
-        if not df_filtered.empty:
-            fig_bar = px.bar(
-                df_filtered,
+    f_col1, f_col2 = st.columns(2)
+    with f_col1:
+        min_rev_filter = st.slider("Corte Mínimo de Avaliações por SKU (Filtro de Significância):", 1, 500, 15)
+    with f_col2:
+        top_n = st.selectbox("Amostragem de Registros Críticos:", [10, 20, 50], index=1)
+
+    query_tab1 = f"""
+        SELECT asin, total_reviews, avg_rating, rejection_rate_pct 
+        FROM v_products 
+        WHERE total_reviews >= {min_rev_filter}
+        ORDER BY rejection_rate_pct DESC 
+        LIMIT {top_n}
+    """
+    df_top_rej = con.execute(query_tab1).df()
+
+    query_sample = f"""
+        SELECT asin, total_reviews, avg_rating, rejection_rate_pct 
+        FROM v_products 
+        WHERE total_reviews >= {min_rev_filter}
+        USING SAMPLE 1000
+    """
+    df_sample_scatter = con.execute(query_sample).df()
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if not df_top_rej.empty:
+            fig_rej = px.bar(
+                df_top_rej,
                 x='asin',
                 y='rejection_rate_pct',
+                color='avg_rating',
+                title=f"Top {top_n} Produtos com Maior Rejeição (Score <= 2.0)",
+                labels={'asin': 'Código ASIN', 'rejection_rate_pct': 'Taxa de Rejeição (%)', 'avg_rating': 'Nota Média'},
+                color_continuous_scale='Turbo'
+            )
+            st.plotly_chart(fig_rej, width='stretch')
+            st.caption("Interpretação: SKUs com barras elevadas demandam auditoria de conformidade de catálogo.")
+        else:
+            st.info("Nenhum registro localizado para o filtro selecionado.")
+
+    with c2:
+        if not df_sample_scatter.empty:
+            fig_scatter = px.scatter(
+                df_sample_scatter,
+                x='total_reviews',
+                y='avg_rating',
+                size='rejection_rate_pct',
                 color='rejection_rate_pct',
-                title="Top 15 Produtos com Maior Rejeição (Notas <= 2)",
-                labels={'asin': 'Produto (ASIN)', 'rejection_rate_pct': 'Taxa de Rejeição (%)'},
-                hover_data=['total_reviews', 'avg_rating'],
+                hover_name='asin',
+                log_x=True,
+                title="Relação Volume vs Nota Média (Amostra Estatística de 1.000 SKUs)",
+                labels={'total_reviews': 'Total de Avaliações (Log)', 'avg_rating': 'Nota Média', 'rejection_rate_pct': 'Rejeição %'},
                 color_continuous_scale='Reds'
             )
-            st.plotly_chart(fig_bar, width='stretch')
-        else:
-            st.info("Nenhum produto atende ao filtro de avaliações selecionado.")
-    else:
-        st.warning("Dados de `product_metrics` incompletos ou vazios.")
+            st.plotly_chart(fig_scatter, width='stretch')
+            st.caption("Interpretação: Permite diferenciar produtos polarizados de produtos estabilizados com alto volume.")
 
 with tab2:
-    st.subheader("Evolução Temporal das Avaliações")
+    st.subheader("Análise Longitudinal e Sazonalidade")
+    st.markdown("""
+    **Finalidade Técnica:** Acompanhar a evolução temporal de satisfação dos SKUs com alto volume amostral.
+    """)
     
-    if not df_monthly.empty and 'asin' in df_monthly.columns:
-        # Tratamento da coluna de período
-        if 'review_year' in df_monthly.columns and 'review_month' in df_monthly.columns:
-            df_monthly['periodo'] = df_monthly['review_year'].astype(str) + "-" + df_monthly['review_month'].astype(str).str.zfill(2)
-        elif 'review_year_month' in df_monthly.columns:
-            df_monthly['periodo'] = df_monthly['review_year_month'].astype(str)
-        else:
-            df_monthly['periodo'] = df_monthly.index.astype(str)
+    top_asins = con.execute("""
+        SELECT asin 
+        FROM v_products 
+        ORDER BY total_reviews DESC 
+        LIMIT 30
+    """).df()['asin'].tolist()
 
-        rating_col = 'monthly_avg_rating' if 'monthly_avg_rating' in df_monthly.columns else 'avg_rating'
+    if top_asins:
+        selected_asin = st.selectbox("Selecione o ASIN Alvo para Decomposição Temporal:", top_asins)
         
-        # Seleção dos 20 produtos com mais registros
-        sample_asins = df_monthly['asin'].value_counts().head(20).index.tolist()
-        if not df_products.empty and 'total_reviews' in df_products.columns:
-            sample_asins = df_products.sort_values(by='total_reviews', ascending=False)['asin'].head(20).tolist()
-            
-        selected_asin = st.selectbox("Selecione um Produto de Alto Volume:", sample_asins)
-        
-        if selected_asin:
-            df_prod_trend = df_monthly[df_monthly['asin'] == selected_asin].sort_values(by='periodo')
-            
-            fig_line = px.line(
-                df_prod_trend,
-                x='periodo',
-                y=rating_col,
-                markers=True,
-                title=f"Evolução Temporal da Nota Média - ASIN {selected_asin}",
-                labels={'periodo': 'Mês/Ano', rating_col: 'Nota Média Mensal'}
-            )
-            st.plotly_chart(fig_line, width='stretch')
-            
-            if 'monthly_reviews' in df_prod_trend.columns:
-                fig_volume = px.bar(
-                    df_prod_trend,
+        query_trend = f"""
+            SELECT 
+                PRINTF('%d-%02d', review_year, review_month) AS periodo,
+                monthly_reviews,
+                monthly_avg_rating
+            FROM v_monthly
+            WHERE asin = '{selected_asin}'
+            ORDER BY review_year, review_month
+        """
+        df_target = con.execute(query_trend).df()
+
+        c_time1, c_time2 = st.columns(2)
+        with c_time1:
+            if not df_target.empty:
+                fig_trend = px.line(
+                    df_target,
+                    x='periodo',
+                    y='monthly_avg_rating',
+                    markers=True,
+                    title=f"Nota Média Mensal - ASIN: {selected_asin}",
+                    labels={'periodo': 'Ano-Mês', 'monthly_avg_rating': 'Nota Média'}
+                )
+                st.plotly_chart(fig_trend, width='stretch')
+                st.caption("Interpretação: Oscilações bruscas indicam eventos pontuais de insatisfação.")
+            else:
+                st.info("Sem dados temporais para o ASIN selecionado.")
+
+        with c_time2:
+            if not df_target.empty:
+                fig_v = px.bar(
+                    df_target,
                     x='periodo',
                     y='monthly_reviews',
-                    title=f"Volume de Avaliações por Mês - ASIN {selected_asin}",
-                    labels={'periodo': 'Mês/Ano', 'monthly_reviews': 'Quantidade de Avaliações'}
+                    title=f"Volume de Avaliações Mensais - ASIN: {selected_asin}",
+                    labels={'periodo': 'Ano-Mês', 'monthly_reviews': 'Avaliações Submetidas'}
                 )
-                st.plotly_chart(fig_volume, width='stretch')
+                st.plotly_chart(fig_v, width='stretch')
+                st.caption("Interpretação: Avalia a significância estatística das notas ao longo do tempo.")
     else:
-        st.warning("Dados de `monthly_product_metrics` incompletos ou vazios.")
+        st.warning("Nenhum ASIN identificado na camada Gold.")
 
 with tab3:
-    st.subheader("Comportamento dos Avaliadores")
+    st.subheader("Assimetria de Distribuição e Engajamento")
+    st.markdown("""
+    **Finalidade Técnica:** Segmentação do comportamento dos avaliadores através de histogramas agregados via DuckDB.
+    """)
     
-    reviewer_count_cols = ['total_reviews_written', 'total_reviews_by_reviewer', 'total_reviews', 'review_count']
-    rev_col = next((c for c in reviewer_count_cols if c in df_reviewers.columns), None)
-    
-    if not df_reviewers.empty and rev_col:
-        col_r1, col_r2 = st.columns(2)
+    df_rev_sample = con.execute("""
+        SELECT total_reviews_written, avg_rating_given
+        FROM v_reviewers
+        USING SAMPLE 50000
+    """).df()
+
+    if not df_rev_sample.empty:
+        p99 = int(df_rev_sample['total_reviews_written'].quantile(0.99))
+        p99 = max(p99, 10)
         
-        p99 = int(df_reviewers[rev_col].quantile(0.99)) if len(df_reviewers) > 10 else 50
-        
-        with col_r1:
-            fig_hist = px.histogram(
-                df_reviewers[df_reviewers[rev_col] <= p99],
-                x=rev_col,
+        c_r1, c_r2 = st.columns(2)
+        with c_r1:
+            fig_user_vol = px.histogram(
+                df_rev_sample[df_rev_sample['total_reviews_written'] <= p99],
+                x='total_reviews_written',
                 nbins=30,
-                title=f"Distribuição de Reviews por Usuário (Até Percentil 99: {p99})",
-                labels={rev_col: 'Avaliações Escritas'}
+                title=f"Histograma de Contribuição por Avaliador (Truncado no P99: {p99})",
+                labels={'total_reviews_written': 'Reviews Escritos por Usuário'}
             )
-            st.plotly_chart(fig_hist, width='stretch')
-            
-        with col_r2:
-            rating_rev_col = 'avg_rating_given' if 'avg_rating_given' in df_reviewers.columns else 'avg_rating'
-            if rating_rev_col in df_reviewers.columns:
-                fig_ratings = px.histogram(
-                    df_reviewers,
-                    x=rating_rev_col,
-                    nbins=20,
-                    title="Distribuição das Notas Médias Dadas pelos Usuários",
-                    labels={rating_rev_col: 'Nota Média Dada'}
-                )
-                st.plotly_chart(fig_ratings, width='stretch')
+            st.plotly_chart(fig_user_vol, width='stretch')
+            st.caption("Interpretação: Demonstra o comportamento de cauda longa na geração de avaliações.")
+
+        with c_r2:
+            fig_user_rates = px.histogram(
+                df_rev_sample,
+                x='avg_rating_given',
+                nbins=20,
+                title="Distribuição das Notas Médias Atribuídas pelos Avaliadores",
+                labels={'avg_rating_given': 'Nota Média Fornecida'}
+            )
+            st.plotly_chart(fig_user_rates, width='stretch')
+            st.caption("Interpretação: Mensura viés de severidade ou leniência na comunidade.")
     else:
-        st.warning("Dados de `reviewer_metrics` incompletos ou coluna de contagem não encontrada.")
+        st.warning("Tabela `reviewer_metrics` vazia ou colunas não compatíveis.")
+
+with tab4:
+    st.subheader("Auditoria dos Registros (Engine OLAP - Limit 100)")
+    st.markdown("Inspeção paginada diretamente dos arquivos Parquet para evitar saturação de memória RAM.")
+    
+    inspect_table = st.radio(
+        "Selecione o Data Lakehouse Layer para Inspeção:", 
+        ["product_metrics", "monthly_product_metrics", "reviewer_metrics"], 
+        horizontal=True
+    )
+    
+    view_map = {
+        "product_metrics": "v_products",
+        "monthly_product_metrics": "v_monthly",
+        "reviewer_metrics": "v_reviewers"
+    }
+    
+    sample_df = con.execute(f"SELECT * FROM {view_map[inspect_table]} LIMIT 100").df()
+    st.dataframe(sample_df, height=350)
